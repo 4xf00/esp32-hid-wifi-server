@@ -161,7 +161,7 @@ sudo iptables -A INPUT -i wlan0 -s 192.168.1.0/24 -p tcp --dport 8765 -j ACCEPT
 ```bash
 cd esp32-hid-wifi-server
 
-# 装依赖库（一次性，脚本会自动 clone 并打补丁）
+# 装依赖库（一次性：clone 到 arduino-cli 认的 sketchbook 目录并打补丁）
 ./scripts/build_firmware.sh install-lib
 arduino-cli core install esp32:esp32@2.0.17
 arduino-cli lib install WebSockets@2.7.2
@@ -175,6 +175,12 @@ cd ../..
 # 编译 + 烧录
 ./scripts/build_firmware.sh upload-flash
 ```
+
+> **`install-lib` 必须用这个脚本，不能手动 clone。** ESP32-BLE-HID 不在 Arduino
+> Library Manager 里；而 Arduino IDE 的 `sketch/lib/` 约定 **arduino-cli 不认** ——
+> 手动 clone 到那里编译会报 `BleCombo.h: No such file or directory`。脚本会装到
+> `arduino-cli config get directories.user` 指向的 `libraries/` 下，并当场验证
+> arduino-cli 确实能看到它。
 
 `config.h` 里要填的：
 
@@ -525,8 +531,7 @@ nc -vz <server-ip> 8765          # 从板子那个网段测
 esp32-hid-wifi-server/
 ├── firmware/esp32c3_hid_agent/
 │   ├── esp32c3_hid_agent.ino     # 固件主体
-│   ├── config.example.h          # 配置模板（复制成 config.h）
-│   └── lib/ESP32-BLE-HID/        # ./scripts/build_firmware.sh install-lib 装
+│   └── config.example.h          # 配置模板（复制成 config.h）
 │
 ├── server/
 │   ├── server.py                 # WebSocket 服务端 + 命令策略 + 审计
@@ -536,7 +541,8 @@ esp32-hid-wifi-server/
 ├── scripts/
 │   ├── setup_wireless_adb.sh     # 无线 ADB 一键配对
 │   ├── gen_token.sh              # 生成 token
-│   └── build_firmware.sh         # 编译 / 烧录
+│   ├── build_firmware.sh         # 装库 / 编译 / 烧录
+│   └── run_tests.sh              # 不需要硬件的自测（CI 跑的就是它）
 │
 ├── examples/
 │   ├── agent_bridge.py           # HID + ADB 组合的 agent 示例

@@ -42,15 +42,29 @@ install_lib() {
   c_bold "== 安装 ESP32-BLE-HID 库 =="
   # 这个库不在 Arduino Library Manager 里（上游 0cococ/ESP32-BLE-HID 未发布到注册表），
   # 所以只能从源码装。Autfy 那个 fork 是唯一在 C3 上验证过的。
-  LIB_DST="$SKETCH_DIR/lib/ESP32-BLE-HID"
+  #
+  # 装到 sketch 里的 lib/ 是**错的**：那是 Arduino IDE 的约定，arduino-cli 完全不看它
+  # （它的库搜索路径只有 arduino-cli 的 directories.user + directories.data 下那几处）。
+  # 必须装到 arduino-cli 自己认的 sketchbook libraries 目录。
+  SKETCHBOOK="$(arduino-cli config get directories.user 2>/dev/null || true)"
+  if [ -z "$SKETCHBOOK" ] || [ "$SKETCHBOOK" = "null" ]; then
+    SKETCHBOOK="$HOME/Arduino"
+  fi
+  LIB_ROOT="$SKETCHBOOK/libraries"
+  LIB_DST="$LIB_ROOT/ESP32-BLE-HID"
   REPO="https://github.com/Autfy/ESP32-BLE-HID.git"
 
-  if [ -d "$LIB_DST" ]; then
-    c_green "已存在: $LIB_DST"
+  echo "  sketchbook : $SKETCHBOOK"
+
+  if [ -d "$LIB_DST/.git" ] || [ -f "$LIB_DST/library.properties" ]; then
+    c_green "  已存在: $LIB_DST"
   else
-    mkdir -p "$(dirname "$LIB_DST")"
+    if [ -e "$LIB_DST" ]; then
+      die "$LIB_DST 已存在但不是 git 库，请手动删掉后重试"
+    fi
+    mkdir -p "$LIB_ROOT"
     git clone --depth 1 "$REPO" "$LIB_DST" || die "clone 失败：$REPO"
-    c_green "✓ 已 clone 到 $LIB_DST"
+    c_green "  ✓ 已 clone 到 $LIB_DST"
   fi
 
   # 打补丁：库里用了 delay()/millis() 但没 include <Arduino.h>。
@@ -59,7 +73,6 @@ install_lib() {
   PATCHED=0
   for f in "$LIB_DST"/*.cpp; do
     if ! grep -q '#include <Arduino.h>' "$f"; then
-      # 插到第一行之前
       printf '#include <Arduino.h>  // patched: delay()/millis() need Arduino.h under arduino-cli\n' \
         | cat - "$f" > "$f.tmp" && mv "$f.tmp" "$f"
       c_green "  ✓ $(basename "$f")"
@@ -67,6 +80,19 @@ install_lib() {
     fi
   done
   [ "$PATCHED" = 0 ] && c_green "  已是最新，无需补丁"
+
+  # 验证 arduino-cli 真的认得它 —— 这一步是必要的：装错目录时 arduino-cli 只会
+  # 在编译最后报 "BleCombo.h: No such file or directory"，看不出根因。
+  c_bold "== 验证 arduino-cli 能看到该库 =="
+  if arduino-cli lib list 2>/dev/null | grep -qi 'ESP32 BLE HID'; then
+    c_green "  ✓ arduino-cli 已识别 ESP32 BLE HID"
+  else
+    c_red "  ✗ arduino-cli 看不到该库，编译会失败。"
+    echo "    期望路径: $LIB_DST"
+    echo "    实际 sketchbook: $SKETCHBOOK"
+    echo "    可显式指定: arduino-cli config set directories.user <你的 sketchbook 路径>"
+    exit 1
+  fi
   c_green "✓ 库就绪"
 }
 
@@ -78,8 +104,9 @@ check_env() {
   fi
   arduino-cli lib list 2>/dev/null | grep -q '^WebSockets' \
     || die "没装 WebSockets 库。执行：arduino-cli lib install WebSockets@2.7.2"
-  [ -d "$SKETCH_DIR/lib/ESP32-BLE-HID" ] \
-    || die "没装 ESP32-BLE-HID 库。执行：$0 install-lib"
+  # 查 arduino-cli 实际能看到的库，而不是查某个磁盘路径。
+  arduino-cli lib list 2>/dev/null | grep -qi 'ESP32 BLE HID' \
+    || die "arduino-cli 看不到 ESP32-BLE-HID 库。执行：$0 install-lib"
   [ -f "$SKETCH_DIR/config.h" ] \
     || die "没填配置。先：cd firmware/esp32c3_hid_agent && cp config.example.h config.h 然后填 WiFi/服务器/token"
 }
