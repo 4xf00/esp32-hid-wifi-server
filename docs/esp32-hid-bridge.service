@@ -1,0 +1,64 @@
+# esp32-hid-bridge.service — 让 server 开机自启、崩了自动重启
+#
+# 安装：
+#   sudo cp docs/esp32-hid-bridge.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now esp32-hid-bridge
+#
+# 改下面这几行（用绝对路径）：
+#   WorkingDirectory  server.py 所在目录
+#   Environment       BRIDGE_BIND / BRIDGE_PORT
+#   User              运行账号（别用 root）
+#
+# 防火墙放行（只放行自己的网段，不要写 0.0.0.0/0）：
+#   # nftables
+#   sudo nft add rule inet filter input iifname "wlan*" ip saddr 192.168.1.0/24 tcp dport 8765 accept
+#   # iptables
+#   sudo iptables -A INPUT -i wlan0 -s 192.168.1.0/24 -p tcp --dport 8765 -j ACCEPT
+#
+# 常见问题：
+#   systemctl status esp32-hid-bridge
+#   journalctl -u esp32-hid-bridge -f
+
+[Unit]
+Description=ESP32-C3 BLE HID bridge server
+Documentation=https://github.com/4xf00/esp32-hid-wifi-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# ↓↓↓ 改成你的实际路径 ↓↓↓
+WorkingDirectory=/opt/esp32-hid-wifi-server/server
+User=youruser
+Group=youruser
+
+Environment=BRIDGE_BIND=192.168.1.100
+Environment=BRIDGE_PORT=8765
+# token 走文件，不写进 unit（unit 是全局可读的）
+Environment=BRIDGE_TOKEN_FILE=/home/youruser/.config/esp32-hid-bridge/token
+
+# --listen-lan 的取舍：
+#   不加 → 只有本机能提交命令（最安全；agent 需要与 server 同机或走 SSH 隧道）
+#   加了 → 额外信任这个 bind 地址本机。注意它信任的是「这一个地址」，
+#          不是整个网段，所以从别的机器 curl 仍然会被拒。
+ExecStart=/usr/bin/python3 /opt/esp32-hid-wifi-server/server/server.py --listen-lan
+
+Restart=always
+RestartSec=5
+
+# 服务只需要读 token 和写审计日志
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# 审计日志和 token 需要写，所以放开这两个路径
+ReadWritePaths=/home/youruser/.local/state/esp32-hid-bridge /home/youruser/.config/esp32-hid-bridge
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=esp32-hid-bridge
+
+[Install]
+WantedBy=multi-user.target

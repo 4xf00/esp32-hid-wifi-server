@@ -1,0 +1,51 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    name: server self-test (no hardware)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Syntax + policy + protocol tests
+        run: ./scripts/run_tests.sh
+
+      - name: Firmware compiles (ESP32-C3)
+        # The firmware build is the part most likely to rot, and it cannot be
+        # tested without the toolchain. Compiling it here catches API breakage
+        # in the Arduino core or in ESP32-BLE-HID before someone burns a board.
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh \
+            | BINDIR=/usr/local/bin sh
+          arduino-cli core update-index --additional-urls \
+            https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core install esp32:esp32@2.0.17
+          arduino-cli lib install WebSockets@2.7.2
+
+          cp firmware/esp32c3_hid_agent/config.example.h \
+             firmware/esp32c3_hid_agent/config.h
+          # CI has no real credentials; the values only need to exist for the
+          # compile to typecheck. Never commit this file.
+          ./scripts/build_firmware.sh install-lib
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32c3:PartitionScheme=no_ota \
+            --warnings all \
+            firmware/esp32c3_hid_agent
+
+      - name: Secret scan (config.h must never be committed)
+        run: |
+          if git ls-files --error-unmatch firmware/esp32c3_hid_agent/config.h 2>/dev/null; then
+            echo "::error::config.h is tracked — it contains WiFi credentials and the token"
+            exit 1
+          fi
+          echo "✓ config.h is not tracked"

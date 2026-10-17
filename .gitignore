@@ -1,0 +1,42 @@
+# ── 固件配置（含 WiFi 密码和 token，绝不能提交）──
+config.h
+*.bin.h
+
+# ── 编译产物 ──
+build/
+*.o
+*.elf
+*.map
+*.bin
+!examples/**/*.bin
+
+# ── ESP32-BLE-HID 库（由 scripts/build_firmware.sh install-lib 拉取）──
+firmware/esp32c3_hid_agent/lib/
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# ── token 与日志 ──
+token
+audit.jsonl
+*.audit.jsonl
+
+# ── 串口抓取的日志 ──
+*.log
+!docs/**/*.log
+
+# ── 编辑器 / 系统 ──
+.DS_Store
+._*
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
+
+# ── 硬件备份（别把整片 flash 上传进 git）──
+*-backup-*.bin
