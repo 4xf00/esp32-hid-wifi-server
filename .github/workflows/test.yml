@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  selftest:
+  server:
     name: server self-test (no hardware)
     runs-on: ubuntu-latest
     steps:
@@ -17,35 +17,92 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Syntax + policy + protocol tests
+      - name: Syntax + policy + protocol + rate-limit tests
         run: ./scripts/run_tests.sh
 
-      - name: Firmware compiles (ESP32-C3)
-        # The firmware build is the part most likely to rot, and it cannot be
-        # tested without the toolchain. Compiling it here catches API breakage
-        # in the Arduino core or in ESP32-BLE-HID before someone burns a board.
+      - name: config.h must never be committed
+        run: |
+          if git ls-files --error-unmatch firmware/esp32c3_hid_agent/config.h 2>/dev/null; then
+            echo "::error::config.h is tracked — it holds WiFi credentials and the bridge token"
+            exit 1
+          fi
+          echo "✓ config.h is not tracked"
+
+      - name: No real credentials in tracked files
+        run: |
+          # Guards against a real SSID/password/token being pasted into a
+          # script or a doc during debugging. Deliberately narrow: an earlier
+          # version used `[A-Za-z0-9_-]{32}` and matched every comment rule
+          # line, so the job was permanently red and got ignored.
+          #
+          # grep -v drops the placeholders in config.example.h.
+          HITS=$(git grep -nE \
+            '(WIFI_PASSWORD *= *"[A-Za-z0-9]{6,}")|(SERVER_TOKEN *= *"[A-Za-z0-9_-]{16,}")|(token=[A-Za-z0-9_-]{24,})' \
+            | grep -v 'PASTE_TOKEN_HERE' \
+            | grep -v 'YOUR_WIFI_PASSWORD' \
+            | grep -v 'BRIDGE_TOKEN=' \
+            || true)
+          if [ -n "$HITS" ]; then
+            echo "$HITS"
+            echo "::error::possible credential committed — inspect the matches above"
+            exit 1
+          fi
+          echo "✓ no obvious credentials in tracked files"
+
+  firmware:
+    name: firmware compiles (ESP32-C3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install toolchain
         run: |
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh \
             | BINDIR=/usr/local/bin sh
+          arduino-cli version
           arduino-cli core update-index --additional-urls \
             https://espressif.github.io/arduino-esp32/package_esp32_index.json
           arduino-cli core install esp32:esp32@2.0.17
           arduino-cli lib install WebSockets@2.7.2
 
-          cp firmware/esp32c3_hid_agent/config.example.h \
-             firmware/esp32c3_hid_agent/config.h
+      - name: Prepare config and library
+        run: |
           # CI has no real credentials; the values only need to exist for the
           # compile to typecheck. Never commit this file.
+          cp firmware/esp32c3_hid_agent/config.example.h \
+             firmware/esp32c3_hid_agent/config.h
           ./scripts/build_firmware.sh install-lib
+
+      - name: Compile
+        # setup-python puts python3.9 ahead of the interpreter arduino-cli
+        # bundles, so esptool's `import serial` needs pyserial here.
+        run: |
+          python3 -m pip install --quiet pyserial
           arduino-cli compile \
             --fqbn esp32:esp32:esp32c3:PartitionScheme=no_ota \
+            --output-dir build-ci \
             --warnings all \
             firmware/esp32c3_hid_agent
 
-      - name: Secret scan (config.h must never be committed)
+      - name: Fits the 2MB app partition
         run: |
-          if git ls-files --error-unmatch firmware/esp32c3_hid_agent/config.h 2>/dev/null; then
-            echo "::error::config.h is tracked — it contains WiFi credentials and the token"
+          SIZE=$(stat -c%s build-ci/*.ino.bin 2>/dev/null || stat -f%z build-ci/*.ino.bin)
+          echo "firmware size: $SIZE bytes (limit 2097152)"
+          if [ "$SIZE" -gt 2097152 ]; then
+            echo "::error::firmware exceeds the 2MB no_ota app partition."
+            echo "::error::The default scheme only has 1.2MB — do not switch the fqbn."
             exit 1
           fi
-          echo "✓ config.h is not tracked"
+          # Also prove the default scheme would NOT fit, so the fqbn above
+          # never looks arbitrary to a future reader.
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32c3 \
+            --output-dir build-ci-default \
+            firmware/esp32c3_hid_agent \
+            && echo "::warning::sketch now fits the 1.2MB default partition —" \
+                   "the no_ota workaround may no longer be necessary"
+          exit 0
